@@ -1,27 +1,348 @@
-name: Publish SDK Docs
+name: Update SDK Documentation
 on:
   push:
     branches: [main]
+    paths:
+      - 'src/todo_sdk_python/**/*.py'
+      - 'pyproject.toml'
 
 jobs:
-  extract-docs:
+  update-docs:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout SDK repository
+        uses: actions/checkout@v4
+        with:
+          path: sdk
+
+      - name: Checkout docs repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/docs
+          token: ${{ secrets.GITHUB_TOKEN }}
+          path: docs
 
       - name: Setup Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.13'
 
       - name: Install dependencies
-        run: pip install requests
+        working-directory: sdk
+        run: |
+          pip install uv
+          uv sync
+          uv pip install requests
 
-      - name: Extract documentation
-        run: python extract_docs.py > sdk-docs.json
+      - name: Generate SDK documentation
+        working-directory: sdk
+        run: |
+          cat > generate_sdk_docs.py << 'EOF'
+          """Generate MDX documentation for the SDK"""
+          import inspect
+          import json
+          from pathlib import Path
+          import sys
+          sys.path.insert(0, 'src')
+          from todo_sdk_python.todo_sdk import TodoClient
+          
+          def extract_method_docs(cls):
+              """Extract documentation from class methods"""
+              methods = []
+              for name, method in inspect.getmembers(cls, inspect.isfunction):
+                  if not name.startswith('_'):
+                      sig = inspect.signature(method)
+                      doc = inspect.getdoc(method) or ""
+                      
+                      # Parse docstring sections
+                      lines = doc.split('\n')
+                      description = []
+                      args = {}
+                      returns = ""
+                      example = []
+                      
+                      section = "description"
+                      for line in lines:
+                          line = line.strip()
+                          if line.startswith("Args:"):
+                              section = "args"
+                          elif line.startswith("Returns:"):
+                              section = "returns"
+                          elif line.startswith("Example:"):
+                              section = "example"
+                          elif section == "description" and line:
+                              description.append(line)
+                          elif section == "args" and ":" in line:
+                              arg_name, arg_desc = line.split(":", 1)
+                              args[arg_name.strip()] = arg_desc.strip()
+                          elif section == "returns" and line and not line.startswith("Returns:"):
+                              returns = line
+                          elif section == "example" and line:
+                              example.append(line)
+                      
+                      methods.append({
+                          "name": name,
+                          "signature": str(sig),
+                          "description": " ".join(description),
+                          "args": args,
+                          "returns": returns,
+                          "example": "\n".join(example)
+                      })
+              return methods
+          
+          def generate_mdx():
+              """Generate MDX documentation files"""
+              docs_dir = Path("../docs/sdk-reference")
+              docs_dir.mkdir(exist_ok=True)
+              
+              # Generate main SDK page
+              main_content = """---
+          title: 'Python SDK'
+          description: 'Official Python SDK for the Todo API'
+          icon: 'python'
+          ---
+          
+          ## Installation
+          
+          Install the SDK using pip:
+          
+          ```bash
+          pip install todo-sdk-python
+          ```
+          
+          ## Quick Start
+          
+          ```python
+          from todo_sdk_python import TodoClient
+          
+          # Initialize the client
+          client = TodoClient(base_url="http://localhost:8000")
+          
+          # Get a todo
+          todo = client.get_todo(1)
+          print(todo)
+          
+          # Create a new todo
+          new_todo = client.create_todo(id=2, title="Buy groceries")
+          print(new_todo)
+          ```
+          
+          ## Configuration
+          
+          The `TodoClient` accepts the following parameters:
+          
+          <ParamField path="base_url" type="string" default="http://localhost:8000">
+            The base URL of the Todo API server
+          </ParamField>
+          """
+              
+              with open(docs_dir / "introduction.mdx", "w") as f:
+                  f.write(main_content)
+              
+              # Generate TodoClient documentation
+              methods = extract_method_docs(TodoClient)
+              
+              client_content = """---
+          title: 'TodoClient'
+          description: 'Main client class for interacting with the Todo API'
+          ---
+          
+          ## Initialization
+          
+          ```python
+          from todo_sdk_python import TodoClient
+          
+          client = TodoClient(base_url="http://localhost:8000")
+          ```
+          
+          <ParamField path="base_url" type="string" default="http://localhost:8000">
+            The base URL of the Todo API server. This should point to your API instance.
+          </ParamField>
+          
+          ## Methods
+          
+          """
+              
+              for method in methods:
+                  if method["name"] == "__init__":
+                      continue
+                  
+                  # Add method section
+                  client_content += f"""### {method["name"]}
+          
+          {method["description"]}
+          
+          <CodeGroup>
+          ```python Signature
+          {method["name"]}{method["signature"]}
+          ```
+          """
+                  
+                  # Add example if available
+                  if method["example"]:
+                      client_content += f"""
+          ```python Example
+          {method["example"]}
+          ```
+          """
+                  
+                  client_content += "</CodeGroup>\n\n"
+                  
+                  # Add parameters
+                  if method["args"]:
+                      client_content += "#### Parameters\n\n"
+                      for arg_name, arg_desc in method["args"].items():
+                          client_content += f'<ParamField path="{arg_name}" type="any" required>\n  {arg_desc}\n</ParamField>\n\n'
+                  
+                  # Add returns
+                  if method["returns"]:
+                      client_content += f"""#### Returns
+          
+          {method["returns"]}
+          
+          """
+              
+              with open(docs_dir / "client.mdx", "w") as f:
+                  f.write(client_content)
+              
+              # Generate method-specific pages
+              for method in methods:
+                  if method["name"] == "__init__":
+                      continue
+                  
+                  method_content = f"""---
+          title: '{method["name"]}'
+          description: '{method["description"]}'
+          ---
+          
+          ## Overview
+          
+          {method["description"]}
+          
+          ## Usage
+          
+          ```python
+          from todo_sdk_python import TodoClient
+          
+          client = TodoClient()
+          {method["example"] if method["example"] else f'result = client.{method["name"]}(...)'}
+          ```
+          
+          ## Signature
+          
+          ```python
+          {method["name"]}{method["signature"]}
+          ```
+          """
+                  
+                  if method["args"]:
+                      method_content += "\n## Parameters\n\n"
+                      for arg_name, arg_desc in method["args"].items():
+                          method_content += f'<ParamField path="{arg_name}" type="any" required>\n  {arg_desc}\n</ParamField>\n\n'
+                  
+                  if method["returns"]:
+                      method_content += f"\n## Returns\n\n{method['returns']}\n"
+                  
+                  with open(docs_dir / f"{method['name']}.mdx", "w") as f:
+                      f.write(method_content)
+              
+              print(f"Generated SDK documentation in {docs_dir}")
+              return len(methods)
+          
+          if __name__ == "__main__":
+              num_methods = generate_mdx()
+              print(f"Documented {num_methods} methods")
+          EOF
+          
+          uv run python generate_sdk_docs.py
 
-      - name: Upload SDK docs
-        uses: actions/upload-artifact@v3
+      - name: Update docs.json navigation
+        working-directory: docs
+        run: |
+          python3 << 'EOF'
+          import json
+          
+          with open("docs.json", "r") as f:
+              config = json.load(f)
+          
+          # Find or create SDK tab
+          sdk_tab_exists = False
+          for tab in config["navigation"]["tabs"]:
+              if tab["tab"] == "SDK Reference":
+                  sdk_tab_exists = True
+                  # Update groups
+                  tab["groups"] = [
+                      {
+                          "group": "Python SDK",
+                          "pages": [
+                              "sdk-reference/introduction",
+                              "sdk-reference/client",
+                              "sdk-reference/get_todo",
+                              "sdk-reference/create_todo"
+                          ]
+                      }
+                  ]
+                  break
+          
+          if not sdk_tab_exists:
+              config["navigation"]["tabs"].append({
+                  "tab": "SDK Reference",
+                  "groups": [
+                      {
+                          "group": "Python SDK",
+                          "pages": [
+                              "sdk-reference/introduction",
+                              "sdk-reference/client",
+                              "sdk-reference/get_todo",
+                              "sdk-reference/create_todo"
+                          ]
+                      }
+                  ]
+              })
+          
+          with open("docs.json", "w") as f:
+              json.dump(config, f, indent=2)
+          EOF
+
+      - name: Check for changes
+        id: check_changes
+        working-directory: docs
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "changes=true" >> $GITHUB_OUTPUT
+          else
+            echo "changes=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Pull Request
+        if: steps.check_changes.outputs.changes == 'true'
+        uses: peter-evans/create-pull-request@v6
         with:
-          name: sdk-docs
-          path: sdk-docs.json
+          token: ${{ secrets.GITHUB_TOKEN }}
+          path: docs
+          commit-message: "docs: update SDK documentation from todo-sdk-python"
+          title: "[Auto] Update SDK Documentation"
+          body: |
+            ## 🤖 Automated SDK Documentation Update
+            
+            This PR updates the SDK documentation based on changes in the todo-sdk-python repository.
+            
+            ### Changes
+            - Updated SDK reference documentation
+            - Regenerated method documentation pages
+            
+            ### Source
+            Triggered by: ${{ github.event.head_commit.message }}
+            Commit: ${{ github.sha }}
+          branch: auto-update-sdk-docs-${{ github.run_number }}
+          delete-branch: true
+          labels: |
+            documentation
+            automated
