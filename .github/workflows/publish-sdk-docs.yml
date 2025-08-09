@@ -1,0 +1,27 @@
+name: Publish SDK Docs
+on:
+  push:
+    branches: [main]
+
+jobs:
+  extract-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Extract documentation
+        run: python extract_docs.py > sdk-docs.json
+
+      - name: Upload SDK docs
+        uses: actions/upload-artifact@v3
+        with:
+          name: sdk-docs
+          path: sdk-docs.json
