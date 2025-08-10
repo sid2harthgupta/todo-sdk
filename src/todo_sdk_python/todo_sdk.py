@@ -31,12 +31,12 @@ class TodoClient:
         """
         return requests.get(f"{self.base_url}/todos/{todo_id}").json()
 
-    def create_todo(self, id: int, title: str) -> dict:
+    def create_todo(self, todo_id: int, title: str) -> dict:
         """
         Create a new todo.
 
         Args:
-            id: Todo ID
+            todo_id: Todo ID
             title: Todo title
 
         Returns:
@@ -49,5 +49,5 @@ class TodoClient:
         """
         return requests.post(
             f"{self.base_url}/todos",
-            json={"id": id, "title": title}
+            json={"id": todo_id, "title": title}
         ).json()

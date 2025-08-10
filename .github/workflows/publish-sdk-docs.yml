@@ -3,45 +3,45 @@ on:
   push:
     branches: [main]
     paths:
-      - 'src/todo_sdk_python/**/*.py'
+      - 'src/**/*.py'
       - 'pyproject.toml'
+      - '.github/workflows/publish-sdk-docs.yml'  # Trigger on workflow changes
+  workflow_dispatch:  # Allow manual triggering
 
 jobs:
   update-docs:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-
     steps:
       - name: Checkout SDK repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
         with:
           path: sdk
 
       - name: Checkout docs repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
         with:
-          repository: ${{ github.repository_owner }}/docs
-          token: ${{ secrets.GITHUB_TOKEN }}
+          repository: sid2harthgupta/docs
+          token: ${{ secrets.DOCS_PUSH_TOKEN }}
           path: docs
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v4
         with:
           python-version: '3.13'
 
       - name: Install dependencies
         working-directory: sdk
         run: |
-          pip install uv
-          uv sync
-          uv pip install requests
+          pip install requests
+
+      - name: Create SDK documentation directory
+        run: |
+          mkdir -p docs/sdk-reference
 
       - name: Generate SDK documentation
         working-directory: sdk
         run: |
-          cat > generate_sdk_docs.py << 'EOF'
+          cat > generate_sdk_docs.py << 'SCRIPT_END'
           """Generate MDX documentation for the SDK"""
           import inspect
           import json
@@ -117,7 +117,7 @@ jobs:
           ## Quick Start
           
           ```python
-          from todo_sdk_python import TodoClient
+          from todo_sdk_python.todo_sdk import TodoClient
           
           # Initialize the client
           client = TodoClient(base_url="http://localhost:8000")
@@ -138,6 +138,16 @@ jobs:
           <ParamField path="base_url" type="string" default="http://localhost:8000">
             The base URL of the Todo API server
           </ParamField>
+          
+          ## Available Methods
+          
+          <Card title="get_todo" icon="search" href="/sdk-reference/get_todo">
+            Retrieve a todo by its ID
+          </Card>
+          
+          <Card title="create_todo" icon="plus" href="/sdk-reference/create_todo">
+            Create a new todo item
+          </Card>
           """
               
               with open(docs_dir / "introduction.mdx", "w") as f:
@@ -154,7 +164,7 @@ jobs:
           ## Initialization
           
           ```python
-          from todo_sdk_python import TodoClient
+          from todo_sdk_python.todo_sdk import TodoClient
           
           client = TodoClient(base_url="http://localhost:8000")
           ```
@@ -226,7 +236,7 @@ jobs:
           ## Usage
           
           ```python
-          from todo_sdk_python import TodoClient
+          from todo_sdk_python.todo_sdk import TodoClient
           
           client = TodoClient()
           {method["example"] if method["example"] else f'result = client.{method["name"]}(...)'}
@@ -256,17 +266,16 @@ jobs:
           if __name__ == "__main__":
               num_methods = generate_mdx()
               print(f"Documented {num_methods} methods")
-          EOF
+          SCRIPT_END
           
-          uv run python generate_sdk_docs.py
+          python generate_sdk_docs.py
 
       - name: Update docs.json navigation
-        working-directory: docs
         run: |
-          python3 << 'EOF'
+          cat > update_sdk_navigation.py << 'SCRIPT_END'
           import json
           
-          with open("docs.json", "r") as f:
+          with open("docs/docs.json", "r") as f:
               config = json.load(f)
           
           # Find or create SDK tab
@@ -304,45 +313,46 @@ jobs:
                   ]
               })
           
-          with open("docs.json", "w") as f:
+          with open("docs/docs.json", "w") as f:
               json.dump(config, f, indent=2)
-          EOF
+          
+          print("Navigation updated successfully")
+          SCRIPT_END
+          
+          python update_sdk_navigation.py
+
+      - name: Configure git
+        working-directory: docs
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Check for changes
         id: check_changes
         working-directory: docs
         run: |
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          
           if [ -n "$(git status --porcelain)" ]; then
             echo "changes=true" >> $GITHUB_OUTPUT
+            echo "Files changed:"
+            git status --short
           else
             echo "changes=false" >> $GITHUB_OUTPUT
+            echo "No changes detected"
           fi
 
-      - name: Create Pull Request
+      - name: Commit and push changes
         if: steps.check_changes.outputs.changes == 'true'
-        uses: peter-evans/create-pull-request@v6
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          path: docs
-          commit-message: "docs: update SDK documentation from todo-sdk-python"
-          title: "[Auto] Update SDK Documentation"
-          body: |
-            ## 🤖 Automated SDK Documentation Update
-            
-            This PR updates the SDK documentation based on changes in the todo-sdk-python repository.
-            
-            ### Changes
-            - Updated SDK reference documentation
-            - Regenerated method documentation pages
-            
-            ### Source
-            Triggered by: ${{ github.event.head_commit.message }}
-            Commit: ${{ github.sha }}
-          branch: auto-update-sdk-docs-${{ github.run_number }}
-          delete-branch: true
-          labels: |
-            documentation
-            automated
+        working-directory: docs
+        run: |
+          git add .
+          git commit -m "Auto-update SDK documentation from todo-sdk-python
+          
+          - Updated SDK reference documentation
+          - Regenerated method documentation pages
+          - Added Python SDK examples
+          
+          Source: ${{ github.event.head_commit.message }}
+          Commit: ${{ github.sha }}"
+          
+          git push origin main
+          echo "Documentation updated successfully"
